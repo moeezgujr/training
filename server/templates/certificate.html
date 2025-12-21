@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Course Completion Certificate</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap');
+    
+    body {
+      font-family: 'Montserrat', sans-serif;
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      color: #333;
+    }
+    
+    .certificate-container {
+      width: 1056px;
+      height: 816px;
+      padding: 30px;
+      background-color: #fff;
+      border: 20px solid #3a506b;
+      position: relative;
+      margin: 0 auto;
+      box-sizing: border-box;
+    }
+    
+    .certificate-header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    
+    .certificate-title {
+      font-size: 48px;
+      font-weight: 700;
+      color: #1c2b35;
+      margin-bottom: 10px;
+      margin-top: 30px;
+    }
+    
+    .certificate-subtitle {
+      font-size: 24px;
+      font-weight: 600;
+      color: #3a506b;
+      margin-bottom: 50px;
+    }
+    
+    .recipient-name {
+      font-size: 36px;
+      font-weight: 700;
+      text-align: center;
+      margin: 40px 0 20px;
+      color: #2d4059;
+    }
+    
+    .certificate-text {
+      font-size: 18px;
+      line-height: 1.6;
+      text-align: center;
+      margin: 20px 0;
+    }
+    
+    .course-name {
+      font-size: 28px;
+      font-weight: 600;
+      text-align: center;
+      margin: 30px 0;
+      color: #3a506b;
+    }
+    
+    .signature-section {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 80px;
+      padding: 0 100px;
+    }
+    
+    .signature {
+      text-align: center;
+    }
+    
+    .signature-line {
+      width: 220px;
+      border-bottom: 2px solid #3a506b;
+      margin-bottom: 10px;
+    }
+    
+    .signature-name {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+    
+    .signature-title {
+      font-size: 14px;
+      color: #555;
+    }
+    
+    .certificate-footer {
+      position: absolute;
+      bottom: 30px;
+      left: 0;
+      right: 0;
+      text-align: center;
+    }
+    
+    .certificate-date {
+      font-size: 16px;
+      margin-bottom: 10px;
+    }
+    
+    .certificate-id {
+      font-size: 12px;
+      color: #666;
+    }
+    
+    .logo {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    
+    .logo img {
+      height: 60px;
+    }
+    
+    .certificate-seal {
+      position: absolute;
+      bottom: 100px;
+      right: 50px;
+      width: 100px;
+      height: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid #3a506b;
+      border-radius: 50%;
+      opacity: 0.8;
+    }
+    
+    .seal-text {
+      font-size: 14px;
+      font-weight: 700;
+      color: #3a506b;
+      transform: rotate(-20deg);
+    }
+    
+    .border-pattern {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      border: 2px solid #e5e5e5;
+      pointer-events: none;
+      z-index: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="certificate-container">
+    <div class="border-pattern"></div>
+    
+    <div class="logo">
+      <h1>Meeting Matters LMS</h1>
+    </div>
+    
+    <div class="certificate-header">
+      <div class="certificate-title">Certificate of Completion</div>
+      <div class="certificate-subtitle">This is to certify that</div>
+    </div>
+    
+    <div class="recipient-name">{{userName}}</div>
+    
+    <div class="certificate-text">
+      has successfully completed all the requirements of the course
+    </div>
+    
+    <div class="course-name">{{courseTitle}}</div>
+    
+    <div class="certificate-text">
+      demonstrating dedication, understanding, and proficiency in the subject matter.
+    </div>
+    
+    <div class="signature-section">
+      <div class="signature">
+        <div class="signature-line"></div>
+        <div class="signature-name">Course Instructor</div>
+        <div class="signature-title">Meeting Matters LMS</div>
+      </div>
+      
+      <div class="signature">
+        <div class="signature-line"></div>
+        <div class="signature-name">Program Director</div>
+        <div class="signature-title">Meeting Matters LMS</div>
+      </div>
+    </div>
+    
+    <div class="certificate-seal">
+      <div class="seal-text">VERIFIED</div>
+    </div>
+    
+    <div class="certificate-footer">
+      <div class="certificate-date">Issued on {{issueDate}}</div>
+      <div class="certificate-id">Certificate ID: {{certificateId}} • Verification Code: {{verificationCode}}</div>
+    </div>
+  </div>
+</body>
+</html>

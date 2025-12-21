@@ -1,0 +1,16 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="16" cy="16" r="16" fill="#2563eb"/>
+  
+  <!-- Book icon representing education -->
+  <path d="M8 6c0-1.1.9-2 2-2h4l2 2h6c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H10c-1.1 0-2-.9-2-2V6z" fill="#ffffff"/>
+  
+  <!-- Pages lines -->
+  <line x1="12" y1="12" x2="20" y2="12" stroke="#2563eb" stroke-width="0.5"/>
+  <line x1="12" y1="14" x2="18" y2="14" stroke="#2563eb" stroke-width="0.5"/>
+  <line x1="12" y1="16" x2="19" y2="16" stroke="#2563eb" stroke-width="0.5"/>
+  
+  <!-- Small graduation cap symbol -->
+  <circle cx="22" cy="10" r="3" fill="#f59e0b"/>
+  <path d="M20 8l2-1 2 1v2l-2 1-2-1V8z" fill="#ffffff"/>
+</svg>
