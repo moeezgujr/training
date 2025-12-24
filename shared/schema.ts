@@ -14,7 +14,8 @@ import {
   unique,
   real,
   decimal,
-  date
+  date,
+  bigint 
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
@@ -294,11 +295,13 @@ export const moduleContents = pgTable("module_contents", {
   moduleId: uuid("module_id").notNull().references(() => modules.id, { onDelete: 'cascade' }),
   title: varchar("title").notNull(),
   type: varchar("type", { enum: contentTypes }).notNull(),
-  url: varchar("url").notNull(),
+  // FIXED: Simple varchar (no limit) instead of text
+  url: varchar("url").notNull(), 
   description: text("description"),
   order: integer("order").notNull(),
-  duration: integer("duration"), // in minutes
-  transcript: text("transcript"), // JSON string of transcript segments with timestamps
+  // FIXED: Keeping this as integer (simple)
+  duration: integer("duration"), 
+  transcript: text("transcript"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -402,10 +405,11 @@ export const assignmentsRelations = relations(assignments, ({ one, many }) => ({
 // Enrollments table
 export const enrollments = pgTable("enrollments", {
   id: uuid("id").primaryKey().defaultRandom(),
+  // FIXED: Simple varchar with no length limit
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   courseId: uuid("course_id").notNull().references(() => courses.id, { onDelete: 'cascade' }),
   status: varchar("status", { enum: enrollmentStatuses }).default('not_started').notNull(),
-  progress: integer("progress").default(0).notNull(), // percentage
+  progress: integer("progress").default(0).notNull(), 
   currentModuleId: uuid("current_module_id").references(() => modules.id),
   completedModules: integer("completed_modules").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow(),

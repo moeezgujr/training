@@ -163,6 +163,27 @@ export class CourseStorage {
             .from(moduleContents)
             .where(eq(moduleContents.moduleId, module.id))
             .orderBy(asc(moduleContents.order));
+            
+          // Check completion status if userId is provided
+          let contentWithStatus = content.map((c: any) => ({ ...c, completed: false }));
+          
+          if (userId) {
+            const progress = await db
+              .select({ lessonId: lessonProgress.lessonId })
+              .from(lessonProgress)
+              .innerJoin(moduleContents, eq(lessonProgress.lessonId, moduleContents.id))
+              .where(and(
+                eq(lessonProgress.userId, userId),
+                eq(lessonProgress.completed, true),
+                eq(moduleContents.moduleId, module.id)
+              ));
+            
+            const completedIds = new Set(progress.map(p => p.lessonId));
+            contentWithStatus = content.map((c: any) => ({ 
+              ...c, 
+              completed: completedIds.has(c.id) 
+            }));
+          }
           
           // Also fetch quizzes for this module
           const moduleQuizzes = await db
@@ -175,11 +196,12 @@ export class CourseStorage {
             ...quiz,
             type: 'quiz',
             url: `/quiz/${quiz.id}`,
-            order: 999  // Place quizzes at the end
+            order: 999,  // Place quizzes at the end
+            completed: false
           }));
           
           // Combine content and quizzes
-          const allContent = [...content, ...quizContent];
+          const allContent = [...contentWithStatus, ...quizContent];
 
           return {
             ...module,
@@ -278,6 +300,7 @@ export class CourseStorage {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+    
 
     await db.insert(courses).values(duplicatedCourse);
     return duplicatedCourse as Course;
@@ -467,5 +490,100 @@ export class CourseStorage {
         eq(lessonNotes.id, noteId),
         eq(lessonNotes.userId, userId)
       ));
+  }
+
+  async markContentComplete(userId: string, contentId: string): Promise<void> {
+    const existing = await this.getLessonProgress(userId, contentId);
+    
+    if (existing) {
+      await db
+        .update(lessonProgress)
+        .set({
+          completed: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(lessonProgress.id, existing.id));
+    } else {
+      await db
+        .insert(lessonProgress)
+        .values({
+          userId,
+          lessonId: contentId,
+          lastPosition: 0,
+          completed: true,
+          watchTime: 0,
+        });
+    }
+  }
+
+  async getAllEnrollmentsWithDetails(): Promise<any[]> {
+    try {
+      const result = await db
+        .select({
+          id: enrollments.id,
+          status: enrollments.status,
+          progress: enrollments.progress,
+          createdAt: enrollments.createdAt,
+          // Get Student Details
+          studentName: sql<string>`COALESCE(${users.firstName}, '') || ' ' || COALESCE(${users.lastName}, '')`,
+          studentEmail: users.email,
+          // Get Course Details
+          courseTitle: courses.title,
+          courseId: courses.id
+        })
+        .from(enrollments)
+        // JOIN on the new VARCHAR userId
+        .leftJoin(users, eq(enrollments.userId, users.id))
+        .leftJoin(courses, eq(enrollments.courseId, courses.id))
+        .orderBy(desc(enrollments.createdAt));
+
+      return result;
+    } catch (error) {
+      console.error("Error fetching all enrollments:", error);
+      return [];
+    }
+  }
+
+  async updateCourseProgress(userId: string, courseId: string): Promise<number> {
+    // 1. Get total lessons in course
+    const totalLessonsResult = await db
+      .select({ count: count(moduleContents.id) })
+      .from(moduleContents)
+      .innerJoin(modules, eq(moduleContents.moduleId, modules.id))
+      .where(eq(modules.courseId, courseId));
+      
+    const totalLessons = Number(totalLessonsResult[0]?.count || 0);
+    
+    if (totalLessons === 0) return 0;
+
+    // 2. Get completed lessons for this user in this course
+    const completedLessonsResult = await db
+      .select({ count: count(lessonProgress.id) })
+      .from(lessonProgress)
+      .innerJoin(moduleContents, eq(lessonProgress.lessonId, moduleContents.id))
+      .innerJoin(modules, eq(moduleContents.moduleId, modules.id))
+      .where(and(
+        eq(lessonProgress.userId, userId),
+        eq(lessonProgress.completed, true),
+        eq(modules.courseId, courseId)
+      ));
+
+    const completedLessons = Number(completedLessonsResult[0]?.count || 0);
+    const progress = Math.min(100, Math.round((completedLessons / totalLessons) * 100));
+
+    // 3. Update enrollment
+    await db
+      .update(enrollments)
+      .set({ 
+        progress,
+        status: progress === 100 ? 'completed' : 'in_progress',
+        updatedAt: new Date()
+      })
+      .where(and(
+        eq(enrollments.userId, userId),
+        eq(enrollments.courseId, courseId)
+      ));
+
+    return progress;
   }
 }

@@ -1334,6 +1334,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   };
 
+  // Admin manual enrollment
+  app.post('/api/admin/enrollments', isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { userId, courseId } = req.body;
+      
+      if (!userId || !courseId) {
+        return res.status(400).json({ message: "User ID and Course ID are required" });
+      }
+      
+      const enrollmentData = {
+        userId,
+        courseId,
+        status: 'in_progress',
+        progress: 0,
+        currentModuleId: null,
+        completedModules: 0
+      };
+      
+      const enrollment = await storage.enrollInCourse(enrollmentData);
+      res.status(201).json(enrollment);
+    } catch (error) {
+      console.error("Error creating enrollment:", error);
+      res.status(500).json({ message: "Failed to create enrollment" });
+    }
+  });
+
+  // Get all enrollments with details
+  app.get('/api/admin/enrollments', isAuthenticated, async (req, res) => {
+    try {
+      // (storage as any) ensures TypeScript doesn't block the call
+      const allEnrollments = await (storage as any).getAllEnrollmentsWithDetails();
+      res.json(allEnrollments);
+    } catch (error) {
+      console.error("Fetch Enrollments Error:", error);
+      res.status(500).json({ message: "Failed to fetch enrollments" });
+    }
+  });
+
   // Get admin dashboard stats
   app.get('/api/admin/stats', isAuthenticated, isAdmin, async (req, res) => {
     try {
@@ -3497,6 +3535,79 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Enhanced Audio Player API Routes
   
+  // Generic lesson progress update (handles certificate issuance)
+  app.post('/api/lesson-progress', isAuthenticated, async (req, res) => {
+    try {
+      const { lessonId, courseId, completed, lastPosition, watchTime } = req.body;
+      const userId = (req.session as any).user.id;
+
+      if (!lessonId) {
+        return res.status(400).json({ message: "Lesson ID is required" });
+      }
+
+      // 1. Save the progress
+      const progress = await storage.updateLessonProgress(userId, lessonId, {
+        lastPosition: lastPosition || 0,
+        completed: !!completed,
+        watchTime: watchTime || 0
+      });
+
+      // 2. Check if the course is now 100% complete
+      if (completed && courseId) {
+        try {
+          // Calculate real-time progress
+          const currentProgress = await (storage as any).updateCourseProgress(userId, courseId);
+
+          if (currentProgress === 100) {
+            // Check if they already have a certificate to avoid duplicates
+            const existingCerts = await storage.getUserCertificates(userId);
+            const hasCert = existingCerts.some((c: any) => c.courseId === courseId);
+            let certificate = existingCerts.find((c: any) => c.courseId === courseId);
+
+            if (!hasCert) {
+              const course = await storage.getCourseById(courseId);
+              
+              if (course) {
+                // AUTO-ISSUE: Create the certificate
+                certificate = await (storage as any).createCertificate({
+                  userId: userId,
+                  courseId: courseId,
+                  title: course.title,
+                  type: "course_completion",
+                  instructorName: course.instructorName || "Meeting Matters Instructor",
+                  description: `Successfully completed the full curriculum for ${course.title}.`,
+                  totalDuration: course.duration || 0,
+                });
+                console.log(`✅ Certificate automatically issued for ${course.title}`);
+              }
+            }
+            
+            // Return certificate info immediately
+            return res.json({
+              ...progress,
+              courseProgress: 100,
+              courseCompleted: true,
+              certificateId: certificate?.id,
+              certificateUrl: certificate?.pdfUrl || `/api/certificates/${certificate?.id}/download`
+            });
+          }
+
+          return res.json({
+            ...progress,
+            courseProgress: currentProgress
+          });
+        } catch (error) {
+          console.error("Error checking certificate eligibility:", error);
+        }
+      }
+
+      res.json(progress);
+    } catch (error) {
+      console.error("Error updating lesson progress:", error);
+      res.status(500).json({ message: "Failed to update progress" });
+    }
+  });
+
   // Get lesson progress
   app.get("/api/lessons/:lessonId/progress", async (req, res) => {
     try {
@@ -3524,13 +3635,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const user = (req.session as any).user;
       const { lessonId } = req.params;
-      const { lastPosition, completed, watchTime } = req.body;
+      const { lastPosition, completed, watchTime, courseId } = req.body;
 
       const progress = await storage.updateLessonProgress(user.id, lessonId, {
         lastPosition,
         completed,
         watchTime
       });
+
+      // Check if the course is now 100% complete
+      if (completed && courseId) {
+        try {
+          // Calculate real-time progress
+          const currentProgress = await (storage as any).updateCourseProgress(user.id, courseId);
+
+          if (currentProgress === 100) {
+            // Check if they already have a certificate to avoid duplicates
+            const existingCerts = await storage.getUserCertificates(user.id);
+            const hasCert = existingCerts.some((c: any) => c.courseId === courseId);
+            let certificate = existingCerts.find((c: any) => c.courseId === courseId);
+
+            if (!hasCert) {
+              const course = await storage.getCourseById(courseId);
+              
+              // AUTO-ISSUE: Create the certificate
+              if (course) {
+                certificate = await (storage as any).createCertificate({
+                  userId: user.id,
+                  courseId: courseId,
+                  title: course.title,
+                  type: "course_completion",
+                  instructorName: course.instructorName || "Meeting Matters Instructor",
+                  description: `Successfully completed the full curriculum for ${course.title}.`,
+                  totalDuration: course.duration || 0,
+                });
+                console.log(`✅ Certificate automatically issued for ${course.title}`);
+              }
+            }
+            
+            // Return certificate info immediately so frontend can show "Download" button
+            return res.json({
+              ...progress,
+              courseProgress: 100,
+              courseCompleted: true,
+              certificateId: certificate?.id,
+              certificateUrl: certificate?.pdfUrl || `/api/certificates/${certificate?.id}/download`
+            });
+          }
+
+          // Return progress with updated course percentage
+          return res.json({
+            ...progress,
+            courseProgress: currentProgress
+          });
+        } catch (error) {
+          console.error("Error checking certificate eligibility:", error);
+        }
+      }
 
       res.json(progress);
     } catch (error) {
