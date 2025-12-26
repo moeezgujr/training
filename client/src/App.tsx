@@ -167,13 +167,14 @@ function Router() {
           )}
         </Route>
         
-        <Route path="/learn/:courseId/:moduleId">
-          {() => (
-            <ProtectedRoute>
-              <CourseModuleViewer />
-            </ProtectedRoute>
-          )}
-        </Route>
+        {/* Student Course Module Viewer */}
+<Route path="/courses/:courseId/modules/:moduleId">
+  {() => (
+    <ProtectedRoute>
+      <CourseModuleViewer />
+    </ProtectedRoute>
+  )}
+</Route>
         
         <Route path="/cart">
           {() => (
