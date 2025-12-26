@@ -93,7 +93,6 @@ const StudentRegistrationPage = lazy(() => import("@/pages/student-registration"
 const RegistrationSuccessPage = lazy(() => import("@/pages/registration-success"));
 
 // Demo pages
-
 const CookiesPage = lazy(() => import("@/pages/cookies"));
 
 // Fallback loader for lazy-loaded components
@@ -157,8 +156,26 @@ function Router() {
             </PublicLayout>
           )}
         </Route>
+
+        {/* FIXED: Both routes for Course Module Viewer */}
+        {/* For Browse Courses → Start Learning */}
+        <Route path="/courses/:courseId/modules/:moduleId">
+          {() => (
+            <ProtectedRoute>
+              <CourseModuleViewer />
+            </ProtectedRoute>
+          )}
+        </Route>
+
+        {/* For My Courses → Continue */}
+        <Route path="/learn/:courseId/:moduleId">
+          {() => (
+            <ProtectedRoute>
+              <CourseModuleViewer />
+            </ProtectedRoute>
+          )}
+        </Route>
         
-        {/* Learning Routes - for enrolled students */}
         <Route path="/courses/:courseId/learn">
           {() => (
             <ProtectedRoute>
@@ -166,15 +183,6 @@ function Router() {
             </ProtectedRoute>
           )}
         </Route>
-        
-        {/* Student Course Module Viewer */}
-<Route path="/courses/:courseId/modules/:moduleId">
-  {() => (
-    <ProtectedRoute>
-      <CourseModuleViewer />
-    </ProtectedRoute>
-  )}
-</Route>
         
         <Route path="/cart">
           {() => (
