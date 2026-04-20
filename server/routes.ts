@@ -1,5 +1,6 @@
-import safepay from './safepay';
+
 import passport from "passport";
+import express from "express";
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
@@ -4753,227 +4754,133 @@ app.patch('/api/admin/enrollments/:id', isAuthenticated, isAdmin, async (req, re
 
   // ────────────────────────────────────────────────
 //  SafePay Integration - Load client
-// ────────────────────────────────────────────────
-// ────────────────────────────────────────────────
-// @ts-ignore - ignore missing types for .js file (or create safepay.d.ts)
-
-// ────────────────────────────────────────────────
-//  Create SafePay Checkout Session (main payment start)
-
-// Extend Request type (add this once in a .d.ts file or at top of this file)
+// ----------------------------------------------------------------
+//  Stripe Payment Integration
+// ----------------------------------------------------------------
 interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    // add other fields if needed
-  };
+  user?: { id: string; };
 }
 
-app.post("/api/create-checkout", async (req: AuthenticatedRequest, res: Response) => {
+app.post("/api/create-checkout", isAuthenticated, async (req: any, res: Response) => {
   try {
-    const userId = req.user?.id || null;
+    const Stripe = (await import('stripe')).default;
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-04-10' as any });
+    const userId = (req.session as any).user?.id;
+    const { amount, orderId, courseId, customerEmail, customerName } = req.body;
 
-    const { amount, orderId, customerEmail, customerName, description } = req.body as {
-      amount?: number;
-      orderId?: string;
-      customerEmail?: string;
-      customerName?: string;
-      description?: string;
-    };
-
-    // Validation
     if (typeof amount !== 'number' || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Valid amount (positive number) is required',
+      return res.status(400).json({ success: false, message: 'Valid amount required' });
+    }
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId is required' });
+    }
+
+    // Create order in DB
+    if (userId && courseId) {
+      await storage.createOrder({
+        userId,
+        courseId,
+        orderType: 'course',
+        originalPrice: amount.toString(),
+        finalPrice: amount.toString(),
+        status: 'pending',
+        paymentMethod: 'stripe',
       });
     }
 
-    if (!orderId || typeof orderId !== 'string') {
-      return res.status(400).json({
-        success: false,
-        message: 'orderId (string) is required',
-      });
-    }
-
-    // Convert PKR → Paisa (SafePay requires paisa)
-    const paisaAmount = amount;
-
-    console.log('[CHECKOUT] Creating SafePay session', {
-      userId,
-      amountPKR: amount,
-      paisaAmount,
-      orderId,
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'pkr',
+          product_data: { name: 'Course Enrollment' },
+          unit_amount: amount * 100,
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      success_url: `${process.env.APP_URL || 'http://localhost:5000'}/api/payment/success?orderId=${orderId}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.APP_URL || 'http://localhost:5000'}/courses`,
+      metadata: { orderId, courseId: courseId || '', userId: userId || '' },
     });
 
-    // Step 1: Create payment token
-    const payment = await safepay.payments.create({
-      amount: paisaAmount,
-      currency: 'PKR',
-    });
+    console.log('[STRIPE] Session created:', session.id);
+    res.json({ success: true, sessionId: session.id });
 
-    console.log('[CHECKOUT] Payment token created:', payment.token);
-
-    // Step 2: Create checkout session with token
-    const checkoutUrl = safepay.checkout.create({
-      token: payment.token,
-      orderId: `${orderId}-${Date.now()}`, // ← Unique to prevent duplicate tracker
-     redirectUrl: `${process.env.APP_URL || 'http://localhost:5000'}/api/payment/success?orderId=${orderId}`,
-cancelUrl: `${process.env.APP_URL || 'http://localhost:5000'}/api/payment/cancel?orderId=${orderId}`,
-      source: 'custom',
-      webhooks: true, // Enable webhooks
-    });
-
-    console.log('[CHECKOUT] Checkout URL generated:', checkoutUrl);
-
-    return res.json({
-      success: true,
-      redirectUrl: checkoutUrl,
-      sessionId: payment.token,
-    });
   } catch (err: any) {
-    console.error('[CHECKOUT ERROR]', {
-      message: err.message,
-      stack: err.stack,
-      code: err.code,
-      response: err.response?.data || err.response,
-      requestBody: req.body,
-    });
-
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to create SafePay order',
-      error: err.message || 'Internal server error',
-    });
+    console.error('[STRIPE ERROR]', err.message);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// 2. Webhook - handles async payment status updates (most reliable for enrollment)
-app.post('/api/safepay/webhook', async (req, res) => {
+// Stripe webhook
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
-    const event = req.body;
-    console.log("[WEBHOOK HIT]", JSON.stringify(event, null, 2));
+    const Stripe = (await import('stripe')).default;
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-04-10' as any });
+    const sig = req.headers['stripe-signature'] as string;
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-    const orderId = event?.data?.metadata?.orderId || event?.reference?.split('-')[0];
+    let event: any;
+    if (webhookSecret && sig) {
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    } else {
+      event = JSON.parse(req.body.toString());
+    }
 
-    if (event?.data?.state === 'PAID' && orderId) {
-      const order = await storage.getOrderById(orderId);
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const { orderId, courseId, userId } = session.metadata;
+      console.log('[STRIPE WEBHOOK] Payment completed for order:', orderId);
 
-      if (order && order.status !== 'paid') {
-        await storage.updateOrderStatus(orderId, 'paid');
+      if (orderId) await storage.updateOrderStatus(orderId, 'paid');
 
-        if (order.courseId && order.userId) {
-          const existing = await db.select().from(enrollments)
-            .where(eq(enrollments.userId, order.userId));
+      if (userId && courseId) {
+        const existing = await db.select().from(enrollments).where(eq(enrollments.userId, userId));
+        if (!existing.some((e: any) => e.courseId === courseId)) {
+          await storage.enrollInCourse({ userId, courseId, status: 'in_progress', progress: 0 });
+          console.log('[STRIPE WEBHOOK] Enrolled:', userId, courseId);
+        }
+      }
+    }
+    res.json({ received: true });
+  } catch (err: any) {
+    console.error('[STRIPE WEBHOOK ERROR]', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
 
-          if (!existing.some(e => e.courseId === order.courseId)) {
-            await storage.enrollInCourse({
-              userId: order.userId,
-              courseId: order.courseId,
-              status: 'in_progress',
-              progress: 0,
-            });
-            console.log("[WEBHOOK] Enrolled via webhook:", order.userId, order.courseId);
+app.get('/api/payment/success', async (req, res) => {
+  const orderIdRaw = req.query.orderId as string;
+  const orderId = orderIdRaw?.split('?')[0];
+  const sessionId = req.query.session_id as string;
+
+  try {
+    if (!orderId) return res.redirect('/payment/error?message=invalid_order');
+
+    // Verify with Stripe if session_id provided
+    if (sessionId) {
+      const Stripe = (await import('stripe')).default;
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-04-10' as any });
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+      if (session.payment_status === 'paid') {
+        const { orderId: metaOrderId, courseId, userId } = session.metadata || {};
+        if (metaOrderId) await storage.updateOrderStatus(metaOrderId, 'paid');
+        if (userId && courseId) {
+          const existing = await db.select().from(enrollments).where(eq(enrollments.userId, userId));
+          if (!existing.some((e: any) => e.courseId === courseId)) {
+            await storage.enrollInCourse({ userId, courseId, status: 'in_progress', progress: 0 });
           }
         }
       }
     }
-
-    res.status(200).json({ received: true });
-  } catch (err) {
-    console.error("[WEBHOOK ERROR]", err);
-    res.status(200).json({ received: true }); // SafePay requires 200
-  }
-});
-app.get('/api/payment/success', async (req, res) => {
-const orderIdRaw = req.query.orderId as string;
-const orderId = orderIdRaw?.split('?')[0];
-
-  console.log('═'.repeat(60));
-  console.log('[SUCCESS] HIT - Full request:');
-  console.log('  - URL:', req.url);
-  console.log('  - Query:', req.query);
-  console.log('  - IP:', req.ip);
-  console.log('  - User-Agent:', req.headers['user-agent']);
-  console.log('  - Session user:', req.session?.user || 'no session');
-  console.log('═'.repeat(60));
-
-  try {
-    if (!orderId || typeof orderId !== 'string') {
-      console.log('[SUCCESS] ERROR: Invalid or missing orderId');
-      return res.redirect('/payment/error?message=invalid_order');
-    }
-
-    console.log('[SUCCESS] Step 1: Fetching order with ID:', orderId);
-
-    const order = await storage.getOrderById(orderId);
-
-    if (!order) {
-      console.log('[SUCCESS] ERROR: Order NOT FOUND for ID:', orderId);
-      return res.redirect('/payment/error?message=order_not_found');
-    }
-
-    console.log('[SUCCESS] Step 2: Order found:', {
-      id: order.id,
-      userId: order.userId,
-      courseId: order.courseId,
-      status: order.status,
-      amount: order.amount,
-      createdAt: order.createdAt,
-    });
-
-    if (order.status === 'paid') {
-      console.log('[SUCCESS] Order already paid - skipping processing');
-      return res.redirect(`/payment-success?orderId=${orderId}&status=already_paid`);
-    }
-
-    console.log('[SUCCESS] Step 3: Updating order status to paid');
-    await storage.updateOrderStatus(orderId, 'paid');
-    console.log('[SUCCESS] Status updated successfully');
-
-    if (!order.userId || !order.courseId) {
-      console.log('[SUCCESS] WARNING: Missing userId or courseId - cannot enroll');
-      return res.redirect(`/payment-success?orderId=${orderId}&status=missing_data`);
-    }
-
-    console.log('[SUCCESS] Step 4: Checking existing enrollment for user:', order.userId);
-
-    const existingEnrollments = await db
-      .select()
-      .from(enrollments)
-      .where(eq(enrollments.userId, order.userId));
-
-    console.log('[SUCCESS] Existing enrollments count:', existingEnrollments.length);
-
-    const alreadyEnrolled = existingEnrollments.some(e => e.courseId === order.courseId);
-
-    if (alreadyEnrolled) {
-      console.log('[SUCCESS] User already enrolled in this course - skipping');
-    } else {
-      console.log('[SUCCESS] Step 5: Enrolling user in course:', order.courseId);
-      await storage.enrollInCourse({
-        userId: order.userId,
-        courseId: order.courseId,
-        status: 'in_progress',
-        progress: 0,
-      });
-      console.log('[SUCCESS] Enrollment completed successfully');
-    }
-
-    console.log('[SUCCESS] All steps complete - redirecting to frontend success page');
-    res.redirect(`/payment-success?orderId=${orderId}&status=success`);
-
   } catch (err: any) {
-    console.error('[SUCCESS CRASH] Full error:', {
-      message: err.message,
-      stack: err.stack,
-      code: err.code,
-      sql: err.sql || 'no sql',
-      params: err.params || 'no params',
-      orderId: orderId || 'unknown',
-    });
-
+    console.error('[PAYMENT SUCCESS ERROR]', err.message);
     res.redirect('/payment/error?message=failed_to_update_order');
   }
+
+    res.redirect(`/payment-success?orderId=${orderId}&status=success`);
 });
 
 app.post('/api/payment/verify', isAuthenticated, async (req, res) => {

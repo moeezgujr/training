@@ -6,15 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
-import { 
-  Smartphone, 
-  CreditCard, 
-  Building2, 
+import { loadStripe } from "@stripe/stripe-js";
+import {
+  CreditCard,
   Shield,
   CheckCircle,
   AlertCircle,
@@ -22,6 +20,8 @@ import {
   Clock,
   Loader2
 } from "lucide-react";
+
+const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
 
 interface Course {
   id: string;
@@ -34,42 +34,17 @@ interface Course {
   moduleCount: number;
 }
 
-interface PaymentMethod {
-  id: string;
-  provider: string;
-  isEnabled: boolean;
-  accountNumber?: string;
-  accountName?: string;
-  bankName?: string;
-  accountTitle?: string;
-  iban?: string;
-  branchCode?: string;
-  instructions?: string;
-  minAmount: string;
-  maxAmount?: string;
-  processingFee: string;
-}
-
 interface OrderSummary {
   coursePrice: number;
   promoDiscount: number;
-  processingFee: number;
   totalAmount: number;
 }
-
-const paymentProviders = {
-  easypaisa: { name: 'EasyPaisa', icon: Smartphone, color: 'bg-green-500', description: 'Pay via EasyPaisa mobile wallet' },
-  jazzcash: { name: 'JazzCash', icon: Smartphone, color: 'bg-orange-500', description: 'Pay via JazzCash mobile wallet' },
-  bank_transfer: { name: 'Bank Transfer', icon: Building2, color: 'bg-blue-500', description: 'Direct bank account transfer' },
-  stripe: { name: 'Credit/Debit Card', icon: CreditCard, color: 'bg-purple-500', description: 'International cards via Stripe' }
-};
 
 export default function CoursePaymentPage() {
   const [match, params] = useRoute("/checkout/course/:courseId");
   const { user, isAuthenticated } = useAuth();
   const { toast } = useToast();
 
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('');
   const [promoCode, setPromoCode] = useState('');
   const [promoDiscount, setPromoDiscount] = useState(0);
   const [orderSummary, setOrderSummary] = useState<OrderSummary | null>(null);
@@ -88,31 +63,13 @@ export default function CoursePaymentPage() {
     enabled: !!courseId,
   });
 
-  const { data: paymentMethods = [], isLoading: paymentLoading } = useQuery<PaymentMethod[]>({
-    queryKey: ['/api/payment-methods'],
-  });
-
-  // Calculate order summary
-  const calculateOrderSummary = (discount = promoDiscount) => {
-    if (!course) return;
-
-    const selectedMethod = paymentMethods.find(m => m.id === selectedPaymentMethod);
-    const feePercent = selectedMethod ? parseFloat(selectedMethod.processingFee) : 0;
-
-    // Ensure price is treated as PKR (no multiplication)
-    const coursePrice = Number(course.price || 0) / 100;
-    const discountAmount = discount;
-    const subtotal = Math.max(0, coursePrice - discountAmount);
-    const processingFee = (subtotal * feePercent) / 100;
-    // FIX: Round to 2 decimal places to prevent floating point issues with SafePay
-    const totalAmount = Number((subtotal + processingFee).toFixed(2));
-
-    setOrderSummary({ coursePrice, promoDiscount: discountAmount, processingFee, totalAmount });
-  };
-
   useEffect(() => {
-    if (course && selectedPaymentMethod) calculateOrderSummary();
-  }, [course, selectedPaymentMethod, promoDiscount]);
+    if (course) {
+      const coursePrice = Number(course.price || 0);
+      const totalAmount = Math.max(0, coursePrice - promoDiscount);
+      setOrderSummary({ coursePrice, promoDiscount, totalAmount });
+    }
+  }, [course, promoDiscount]);
 
   useEffect(() => {
     if (user && isAuthenticated) {
@@ -134,18 +91,16 @@ export default function CoursePaymentPage() {
       let discountAmount = 0;
       if (course) {
         if (data.discountType === 'percentage') {
-          discountAmount = ((course.price / 100) * data.discountValue) / 100;
+          discountAmount = (Number(course.price) * data.discountValue) / 100;
         } else {
           discountAmount = data.discountValue;
         }
       }
       setPromoDiscount(discountAmount);
-      calculateOrderSummary(discountAmount);
       toast({ title: "Promo Applied!", description: `Saved PKR ${discountAmount.toLocaleString()}` });
     },
     onError: () => {
       setPromoDiscount(0);
-      calculateOrderSummary(0);
       toast({ title: "Invalid Promo", description: "Promo code not valid", variant: "destructive" });
     },
   });
@@ -154,99 +109,62 @@ export default function CoursePaymentPage() {
     if (promoCode.trim()) applyPromoMutation.mutate(promoCode.trim());
   };
 
-  const handleCreateOrder = () => {
-    if (!selectedPaymentMethod || !orderSummary) {
-      toast({ title: "Select Payment Method", variant: "destructive" });
-      return;
-    }
+  const handleCheckout = async () => {
+    if (!orderSummary) return;
 
     if (!customerDetails.firstName || !customerDetails.email) {
       toast({ title: "Fill Required Fields", variant: "destructive" });
       return;
     }
 
-    if (orderSummary.totalAmount <= 0) {
-      toast({ title: "Invalid Amount", description: "Payment amount must be greater than 0", variant: "destructive" });
-      return;
-    }
-
     setIsSubmitting(true);
 
-    const orderData = {
-      courseId,
-      paymentMethod: selectedPaymentMethod,
-      promoCode: promoCode || undefined,
-      customerDetails,
-      orderSummary,
-      amount: Number(orderSummary.totalAmount.toFixed(2)), // Ensure clean number
-    };
-
-    console.log("[Checkout] Creating order:", orderData);
-
-    apiRequest('POST', '/api/orders', orderData)
-      .then(res => res.json())
-      .then(data => {
-        toast({ title: "Order Created", description: "Redirecting to SafePay..." });
-        handleProceedToPayment(data.id);
-      })
-      .catch(err => {
-        toast({ title: "Order Failed", description: err.message || "Try again", variant: "destructive" });
-        setIsSubmitting(false);
-      });
-  };
-
-  const handleProceedToPayment = async (orderId: string) => {
     try {
-      console.log("[Checkout] Proceeding to payment for Order ID:", orderId);
-      console.log("[Checkout] Payment payload:", {
-        amount: Number(orderSummary?.totalAmount.toFixed(2)),
-        orderId,
-        customerEmail: customerDetails.email,
-        description: `Enrollment in ${course?.title}`,
+      // Create order first
+      const orderRes = await apiRequest('POST', '/api/orders', {
+        courseId,
+        paymentMethod: 'stripe',
+        promoCode: promoCode || undefined,
+        customerDetails,
+        orderSummary,
+        amount: orderSummary.totalAmount,
       });
+      const orderData = await orderRes.json();
+      const orderId = orderData.id;
 
-      // FIX: corrected endpoint from /api/payment/create-checkout to /api/create-checkout
+      // Create Stripe checkout session
       const response = await fetch("/api/create-checkout", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-        },
-        credentials: "include", // ensures auth cookies are sent
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
-          amount: Number(orderSummary?.totalAmount.toFixed(2)), // PKR value — backend converts to paisa
+          amount: orderSummary.totalAmount,
           orderId,
+          courseId,
           customerEmail: customerDetails.email,
-          customerName: (customerDetails.firstName + " " + customerDetails.lastName).trim() || "Guest",
-          description: `Enrollment in ${course?.title}`,
-          currency: "PKR"
+          customerName: `${customerDetails.firstName} ${customerDetails.lastName}`.trim(),
         }),
       });
 
       const data = await response.json();
 
-      if (data.success && data.redirectUrl) {
-        console.log("[Checkout] Redirecting to:", data.redirectUrl);
-        window.location.href = data.redirectUrl;
+      if (data.success && data.sessionId) {
+        const stripe = await stripePromise;
+        const { error } = await stripe!.redirectToCheckout({ sessionId: data.sessionId });
+        if (error) {
+          toast({ title: "Payment Error", description: error.message, variant: "destructive" });
+        }
       } else {
-        toast({ 
-          title: "Payment Error", 
-          description: data.message || "Failed to start payment", 
-          variant: "destructive" 
-        });
-        setIsSubmitting(false);
+        toast({ title: "Payment Error", description: data.message || "Failed to start payment", variant: "destructive" });
       }
-    } catch (err) {
+    } catch (err: any) {
       toast({ title: "Payment Failed", description: "Something went wrong", variant: "destructive" });
+    } finally {
       setIsSubmitting(false);
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast({ title: "Copied to clipboard" });
-  };
-
-  if (courseLoading || paymentLoading) {
+  if (courseLoading) {
     return (
       <PublicLayout>
         <div className="container max-w-4xl mx-auto py-8 flex items-center justify-center h-64">
@@ -272,33 +190,30 @@ export default function CoursePaymentPage() {
     );
   }
 
-  const enabledPaymentMethods = paymentMethods.filter(method => method.isEnabled);
-
   return (
     <PublicLayout>
       <div className="container max-w-6xl mx-auto py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
+            {/* Course Info */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Shield className="h-5 w-5" />
                   Secure Checkout
                 </CardTitle>
-                <CardDescription>
-                  Complete your purchase for instant course access
-                </CardDescription>
+                <CardDescription>Complete your purchase for instant course access</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="flex gap-4">
-                  <img 
-                    src={course.imageUrl || '/api/placeholder/120/80'} 
+                  <img
+                    src={course.imageUrl || '/api/placeholder/120/80'}
                     alt={course.title}
                     className="w-20 h-20 object-cover rounded-lg"
                   />
                   <div className="flex-1">
                     <h3 className="font-semibold text-lg">{course.title}</h3>
-                    <p className="text-muted-foreground">by {"MEETING MATTERS"}</p>
+                    <p className="text-muted-foreground">by MEETING MATTERS</p>
                     <div className="flex gap-4 mt-2 text-sm text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Clock className="h-4 w-4" />
@@ -312,13 +227,14 @@ export default function CoursePaymentPage() {
                   </div>
                   <div className="text-right">
                     <div className="text-2xl font-bold">
-                      PKR {((course.price || 0) / 100).toLocaleString()}
+                      PKR {Number(course.price || 0).toLocaleString()}
                     </div>
                   </div>
                 </div>
               </CardContent>
             </Card>
 
+            {/* Customer Info */}
             <Card>
               <CardHeader>
                 <CardTitle>Customer Information</CardTitle>
@@ -327,7 +243,7 @@ export default function CoursePaymentPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <Label htmlFor="firstName">First Name *</Label>
-                    <Input 
+                    <Input
                       id="firstName"
                       value={customerDetails.firstName}
                       onChange={(e) => setCustomerDetails(prev => ({ ...prev, firstName: e.target.value }))}
@@ -336,7 +252,7 @@ export default function CoursePaymentPage() {
                   </div>
                   <div>
                     <Label htmlFor="lastName">Last Name *</Label>
-                    <Input 
+                    <Input
                       id="lastName"
                       value={customerDetails.lastName}
                       onChange={(e) => setCustomerDetails(prev => ({ ...prev, lastName: e.target.value }))}
@@ -345,7 +261,7 @@ export default function CoursePaymentPage() {
                   </div>
                   <div>
                     <Label htmlFor="email">Email *</Label>
-                    <Input 
+                    <Input
                       id="email"
                       type="email"
                       value={customerDetails.email}
@@ -355,7 +271,7 @@ export default function CoursePaymentPage() {
                   </div>
                   <div>
                     <Label htmlFor="phone">Phone Number</Label>
-                    <Input 
+                    <Input
                       id="phone"
                       value={customerDetails.phone}
                       onChange={(e) => setCustomerDetails(prev => ({ ...prev, phone: e.target.value }))}
@@ -366,42 +282,22 @@ export default function CoursePaymentPage() {
               </CardContent>
             </Card>
 
+            {/* Payment Method */}
             <Card>
               <CardHeader>
-                <CardTitle>Choose Payment Method</CardTitle>
-                <CardDescription>Select your preferred method</CardDescription>
+                <CardTitle>Payment Method</CardTitle>
+                <CardDescription>Secure payment via Stripe</CardDescription>
               </CardHeader>
               <CardContent>
-                <RadioGroup value={selectedPaymentMethod} onValueChange={setSelectedPaymentMethod}>
-                  <div className="space-y-3">
-                    {enabledPaymentMethods.map((method) => {
-                      const provider = paymentProviders[method.provider as keyof typeof paymentProviders];
-                      const Icon = provider?.icon || CreditCard;
-                      
-                      return (
-                        <Label
-                          key={method.id}
-                          htmlFor={method.id}
-                          className="flex items-center space-x-3 border rounded-lg p-4 cursor-pointer hover:bg-muted/50"
-                        >
-                          <RadioGroupItem value={method.id} id={method.id} />
-                          <div className={`p-2 rounded-lg ${provider?.color || 'bg-gray-500'}`}>
-                            <Icon className="h-5 w-5 text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="font-medium">{provider?.name}</div>
-                            <div className="text-sm text-muted-foreground">{provider?.description}</div>
-                            {parseFloat(method.processingFee) > 0 && (
-                              <div className="text-sm text-muted-foreground">
-                                Processing fee: {method.processingFee}%
-                              </div>
-                            )}
-                          </div>
-                        </Label>
-                      );
-                    })}
+                <div className="flex items-center gap-3 border rounded-lg p-4 bg-muted/30">
+                  <div className="p-2 rounded-lg bg-purple-500">
+                    <CreditCard className="h-5 w-5 text-white" />
                   </div>
-                </RadioGroup>
+                  <div>
+                    <div className="font-medium">Credit / Debit Card</div>
+                    <div className="text-sm text-muted-foreground">Visa, Mastercard, and more via Stripe</div>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -416,13 +312,13 @@ export default function CoursePaymentPage() {
                 <div>
                   <Label htmlFor="promoCode">Promo Code</Label>
                   <div className="flex gap-2 mt-1">
-                    <Input 
+                    <Input
                       id="promoCode"
                       value={promoCode}
                       onChange={(e) => setPromoCode(e.target.value)}
                       placeholder="Enter promo code"
                     />
-                    <Button 
+                    <Button
                       variant="outline"
                       onClick={handleApplyPromo}
                       disabled={applyPromoMutation.isPending}
@@ -440,45 +336,31 @@ export default function CoursePaymentPage() {
 
                 <Separator />
 
-                {orderSummary ? (
+                {orderSummary && (
                   <div className="space-y-2">
                     <div className="flex justify-between">
                       <span>Course Price</span>
                       <span>PKR {orderSummary.coursePrice.toLocaleString()}</span>
                     </div>
-                    
                     {orderSummary.promoDiscount > 0 && (
                       <div className="flex justify-between text-green-600">
                         <span>Promo Discount</span>
                         <span>-PKR {orderSummary.promoDiscount.toLocaleString()}</span>
                       </div>
                     )}
-                    
-                    {orderSummary.processingFee > 0 && (
-                      <div className="flex justify-between text-muted-foreground">
-                        <span>Processing Fee</span>
-                        <span>PKR {orderSummary.processingFee.toLocaleString()}</span>
-                      </div>
-                    )}
-                    
                     <Separator />
-                    
                     <div className="flex justify-between text-lg font-semibold">
                       <span>Total</span>
                       <span>PKR {orderSummary.totalAmount.toLocaleString()}</span>
                     </div>
                   </div>
-                ) : (
-                  <div className="text-center text-muted-foreground py-8">
-                    Select a payment method to see summary
-                  </div>
                 )}
 
-                <Button 
-                  className="w-full bg-blue-600 hover:bg-blue-700" 
+                <Button
+                  className="w-full bg-blue-600 hover:bg-blue-700"
                   size="lg"
-                  onClick={handleCreateOrder}
-                  disabled={!selectedPaymentMethod || isSubmitting}
+                  onClick={handleCheckout}
+                  disabled={isSubmitting}
                 >
                   {isSubmitting ? (
                     <>
@@ -486,13 +368,16 @@ export default function CoursePaymentPage() {
                       Processing...
                     </>
                   ) : (
-                    "Proceed to SafePay"
+                    <>
+                      <CreditCard className="h-4 w-4 mr-2" />
+                      Proceed to Payment
+                    </>
                   )}
                 </Button>
 
                 <div className="text-center text-sm text-muted-foreground">
                   <Shield className="h-4 w-4 mx-auto mb-1" />
-                  Secure payment processing
+                  Secure payment via Stripe
                 </div>
               </CardContent>
             </Card>
